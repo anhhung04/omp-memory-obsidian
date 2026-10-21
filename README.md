@@ -11,12 +11,12 @@ This is an **extension package**, not a `memory.backend` value: omp's backend re
 | Recall | `before_agent_start` searches the vault with your prompt and appends ranked hits to the system prompt (cached 5 min) |
 | Retain | every `OMP_MEMORY_RETAIN_EVERY` turns (default 4), a side turn (`runEphemeralTurn`) extracts durable facts from the conversation buffer → daily log + topic pages (importance ≥ 3) |
 | Compaction | `session.compacting` injects the vault's `MEMORY.md` index as summarization context |
-| Tools | with `memory.backend: off` the tools register under the **native names** `recall` / `retain` / `memory_edit`; with a native backend configured they register as `vault_search` / `vault_remember` / `vault_edit` so both stores coexist |
+| Tools | with `memory.backend: off` the tools register under the **native names** `recall` / `retain` / `memory_edit`; with a native backend configured they register as `memory_search` / `memory_save` / `memory_edit` so both stores coexist |
 | Inspect | `/vault stats`, `/vault path`, `/vault reindex`, `/vault sync` (force extraction) |
 
 `memory_edit` accepts `action: "update"` (replace page body) or `"forget"` (delete page), addressed by vault-relative path. Native `invalidate` has no vault equivalent and is not offered.
 
-Auto recall/retain runs only in the main session; subagents share the vault but don't run their own loops. If the host lacks side-turn support, retention degrades to appending the raw excerpt to the daily log. Detection of a native backend keys off `ctx.memory`, so with `memory.backend: local` (which has no recall/retain tools but does provide the runtime facade) the tools register under `vault_*` names.
+Auto recall/retain runs only in the main session; subagents share the vault but don't run their own loops. If the host lacks side-turn support, retention degrades to appending the raw excerpt to the daily log. Detection of a native backend keys off `ctx.memory`, so with `memory.backend: local` (which has no recall/retain tools but does provide the runtime facade) the tools register under `memory_*` names.
 
 ## Vault layout
 

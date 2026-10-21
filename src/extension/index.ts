@@ -8,8 +8,8 @@
  * - session.compacting → vault index as compaction context
  * - tools: when no native memory backend is active (ctx.memory absent), tools
  *   register under the native names recall / retain / memory_edit; when a
- *   native backend is configured, they register as vault_search /
- *   vault_remember / vault_edit so both stores coexist.
+ *   native backend is configured, they register as memory_search /
+ *   memory_save / memory_edit so both stores coexist.
  * - command: /vault stats | path | reindex | sync
  *
  * Vault root resolution (first match wins):
@@ -74,7 +74,7 @@ interface ToolNames {
 	edit: string;
 }
 
-const FALLBACK_NAMES: ToolNames = { search: "vault_search", remember: "vault_remember", edit: "vault_edit" };
+const FALLBACK_NAMES: ToolNames = { search: "memory_search", remember: "memory_save", edit: "memory_edit" };
 const NATIVE_NAMES: ToolNames = { search: "recall", remember: "retain", edit: "memory_edit" };
 
 const COMPACTION_CONTEXT_CAP = 2000;
@@ -136,7 +136,7 @@ export default function obsidianMemory(pi: ExtensionAPI): void {
 			name: names.search,
 			label: "Memory Search",
 			description:
-				"Search long-term memory (Obsidian vault: full-text over topic pages and daily logs). Returns ranked hits with vault-relative paths; read full pages with the read tool.",
+				"Search the agent's long-term memory (persistent Obsidian wiki: topic pages and daily logs). Use before answering questions about prior decisions, user preferences, environment facts, or past sessions. Returns ranked hits with vault-relative paths; read full pages with the read tool.",
 			parameters: z.object({
 				query: z.string().describe("Search query — keywords, topic names, tags"),
 				limit: z.number().optional().describe("Max results, default 8"),
@@ -156,9 +156,9 @@ export default function obsidianMemory(pi: ExtensionAPI): void {
 
 		pi.registerTool({
 			name: names.remember,
-			label: "Memory Retain",
+			label: "Memory Save",
 			description:
-				"Store a durable fact in long-term memory (Obsidian vault). Always appends to today's daily log; with a topic slug and importance >= 3 it also creates/updates the topic page and rebuilds the wiki index.",
+				"Store a durable fact in the agent's long-term memory (persistent Obsidian wiki) — decisions, preferences, constraints, resolved failures, lessons. Always appends to today's daily log; with a topic slug and importance >= 3 it also creates/updates the topic page and rebuilds the wiki index.",
 			parameters: z.object({
 				title: z.string().describe("Short title for the memory"),
 				content: z.string().describe("Self-contained fact, 1-4 sentences"),
@@ -192,7 +192,7 @@ export default function obsidianMemory(pi: ExtensionAPI): void {
 			name: names.edit,
 			label: "Memory Edit",
 			description:
-				'Update or forget a memory page by vault-relative path (e.g. topics/omp-config.md, as returned by search). action "update" replaces the page body with content; action "forget" deletes the page.',
+				'Update or forget a long-term memory page by vault-relative path (e.g. topics/omp-config.md, as returned by search). action "update" replaces the page body with content; action "forget" deletes the page.',
 			parameters: z.object({
 				path: z.string().describe("Vault-relative page path"),
 				action: z.string().describe('"update" | "forget"'),
