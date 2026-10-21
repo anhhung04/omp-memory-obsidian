@@ -1,15 +1,12 @@
 /**
  * omp-memory-obsidian — Obsidian-vault long-term memory for omp.
  *
- * Mimics the native memory-backend surface without one:
  * - before_agent_start → recall relevant pages into the system prompt
  * - message_end/turn_end → buffer conversation, extract durable memories every
  *   OMP_MEMORY_RETAIN_EVERY turns via a side turn, write to the vault
  * - session.compacting → vault index as compaction context
- * - tools: when no native memory backend is active (ctx.memory absent), tools
- *   register under the native names recall / retain / memory_edit; when a
- *   native backend is configured, they register as memory_search /
- *   memory_save / memory_edit so both stores coexist.
+ * - tools: memory_obsidian_search / memory_obsidian_save / memory_obsidian_edit
+ *   (fixed names: collision-free under every memory.backend value)
  * - command: /vault stats | path | reindex | sync
  *
  * Vault root resolution (first match wins):
@@ -23,8 +20,7 @@
  *      the Windows profile folder name.
  *
  * Vault runtimes are keyed by vault root and shared across rebound sessions;
- * tool-name registration is per binding (factories re-execute per session).
- * Auto recall/retain runs only for the main agent.
+ * auto recall/retain runs only for the main agent.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
@@ -37,6 +33,7 @@ import { slugify, VaultStore } from "../vault/store";
 import { rebuildMasterIndex } from "../vault/wiki";
 import { buildRecallBlock } from "./recall";
 import { RetainLoop } from "./retain";
+import { TOOL_EDIT, TOOL_SAVE, TOOL_SEARCH } from "./tools";
 
 interface VaultRuntime {
 	root: string;
@@ -55,7 +52,7 @@ interface SearchParams {
 	query: string;
 	limit?: number;
 }
-interface RememberParams {
+interface SaveParams {
 	title: string;
 	content: string;
 	topic?: string;
@@ -67,15 +64,6 @@ interface EditParams {
 	action: string; // "update" | "forget"
 	content?: string;
 }
-
-interface ToolNames {
-	search: string;
-	remember: string;
-	edit: string;
-}
-
-const FALLBACK_NAMES: ToolNames = { search: "memory_search", remember: "memory_save", edit: "memory_edit" };
-const NATIVE_NAMES: ToolNames = { search: "recall", remember: "retain", edit: "memory_edit" };
 
 const COMPACTION_CONTEXT_CAP = 2000;
 
@@ -104,9 +92,6 @@ export default function obsidianMemory(pi: ExtensionAPI): void {
 	const z = pi.zod;
 	pi.setLabel("Obsidian memory");
 
-	/** Set on first session_start of this binding; recall guidance names the live tools. */
-	let toolNames: ToolNames | undefined;
-
 	async function getRuntime(ctx: ExtensionContext): Promise<VaultRuntime> {
 		const root = resolveVaultRoot(ctx.cwd);
 		const existing = runtimes.get(root);
@@ -122,118 +107,104 @@ export default function obsidianMemory(pi: ExtensionAPI): void {
 		return runtime;
 	}
 
-	pi.on("session_start", async (_event, ctx) => {
-		if (toolNames) return;
-		// ctx.memory exists only when a native memory backend resolved; in that
-		// case keep the native recall/retain names for it and use vault_* here.
-		toolNames = ctx.memory ? FALLBACK_NAMES : NATIVE_NAMES;
-		registerTools(toolNames);
-		pi.logger.info(`obsidian-memory: tools registered as ${Object.values(toolNames).join(", ")}`);
+	pi.registerTool({
+		name: TOOL_SEARCH,
+		label: "Memory Search",
+		description:
+			"Search the agent's long-term memory (persistent Obsidian wiki: topic pages and daily logs). Use before answering questions about prior decisions, user preferences, environment facts, or past sessions. Returns ranked hits with vault-relative paths; read full pages with the read tool.",
+		parameters: z.object({
+			query: z.string().describe("Search query — keywords, topic names, tags"),
+			limit: z.number().optional().describe("Max results, default 8"),
+		}),
+		async execute(_toolCallId, params: SearchParams, _signal, _onUpdate, ctx) {
+			const rt = await getRuntime(ctx);
+			const hits = await rt.index.search(params.query, params.limit ?? 8);
+			if (!hits.length) {
+				return { content: [{ type: "text", text: `No memories match "${params.query}".` }], details: { hits: 0 } };
+			}
+			const text = hits
+				.map((h, i) => `${i + 1}. **${h.title}** — \`${join(rt.root, h.path)}\`\n   ${h.snippet}`)
+				.join("\n");
+			return { content: [{ type: "text", text }], details: { hits: hits.length, paths: hits.map(h => h.path) } };
+		},
 	});
 
-	function registerTools(names: ToolNames): void {
-		pi.registerTool({
-			name: names.search,
-			label: "Memory Search",
-			description:
-				"Search the agent's long-term memory (persistent Obsidian wiki: topic pages and daily logs). Use before answering questions about prior decisions, user preferences, environment facts, or past sessions. Returns ranked hits with vault-relative paths; read full pages with the read tool.",
-			parameters: z.object({
-				query: z.string().describe("Search query — keywords, topic names, tags"),
-				limit: z.number().optional().describe("Max results, default 8"),
-			}),
-			async execute(_toolCallId, params: SearchParams, _signal, _onUpdate, ctx) {
-				const rt = await getRuntime(ctx);
-				const hits = await rt.index.search(params.query, params.limit ?? 8);
-				if (!hits.length) {
-					return { content: [{ type: "text", text: `No memories match "${params.query}".` }], details: { hits: 0 } };
-				}
-				const text = hits
-					.map((h, i) => `${i + 1}. **${h.title}** — \`${join(rt.root, h.path)}\`\n   ${h.snippet}`)
-					.join("\n");
-				return { content: [{ type: "text", text }], details: { hits: hits.length, paths: hits.map(h => h.path) } };
-			},
-		});
+	pi.registerTool({
+		name: TOOL_SAVE,
+		label: "Memory Save",
+		description:
+			"Store a durable fact in the agent's long-term memory (persistent Obsidian wiki) — decisions, preferences, constraints, resolved failures, lessons. Always appends to today's daily log; with a topic slug and importance >= 3 it also creates/updates the topic page and rebuilds the wiki index.",
+		parameters: z.object({
+			title: z.string().describe("Short title for the memory"),
+			content: z.string().describe("Self-contained fact, 1-4 sentences"),
+			topic: z.string().optional().describe("Stable kebab-case topic slug; omit for marginal items"),
+			tags: z.array(z.string()).optional(),
+			importance: z.number().optional().describe("1-5, default 3; topic pages need >= 3"),
+		}),
+		async execute(_toolCallId, params: SaveParams, _signal, _onUpdate, ctx) {
+			const rt = await getRuntime(ctx);
+			const importance = params.importance ?? 3;
+			const dailyPath = await rt.store.appendDaily(`**${params.title}** — ${params.content}`);
+			let topicPath: string | undefined;
+			if (params.topic && importance >= 3) {
+				const result = await rt.store.upsertTopic({
+					slug: slugify(params.topic),
+					title: params.title,
+					body: params.content,
+					tags: params.tags,
+					importance,
+					source: "tool",
+				});
+				topicPath = result.path;
+				await rebuildMasterIndex(rt.store);
+			}
+			const where = topicPath ? `daily log (${dailyPath}) and topic page (${topicPath})` : `daily log (${dailyPath})`;
+			return { content: [{ type: "text", text: `Remembered in ${where}.` }], details: { dailyPath, topicPath } };
+		},
+	});
 
-		pi.registerTool({
-			name: names.remember,
-			label: "Memory Save",
-			description:
-				"Store a durable fact in the agent's long-term memory (persistent Obsidian wiki) — decisions, preferences, constraints, resolved failures, lessons. Always appends to today's daily log; with a topic slug and importance >= 3 it also creates/updates the topic page and rebuilds the wiki index.",
-			parameters: z.object({
-				title: z.string().describe("Short title for the memory"),
-				content: z.string().describe("Self-contained fact, 1-4 sentences"),
-				topic: z.string().optional().describe("Stable kebab-case topic slug; omit for marginal items"),
-				tags: z.array(z.string()).optional(),
-				importance: z.number().optional().describe("1-5, default 3; topic pages need >= 3"),
-			}),
-			async execute(_toolCallId, params: RememberParams, _signal, _onUpdate, ctx) {
-				const rt = await getRuntime(ctx);
-				const importance = params.importance ?? 3;
-				const dailyPath = await rt.store.appendDaily(`**${params.title}** — ${params.content}`);
-				let topicPath: string | undefined;
-				if (params.topic && importance >= 3) {
-					const result = await rt.store.upsertTopic({
-						slug: slugify(params.topic),
-						title: params.title,
-						body: params.content,
-						tags: params.tags,
-						importance,
-						source: "tool",
-					});
-					topicPath = result.path;
-					await rebuildMasterIndex(rt.store);
+	pi.registerTool({
+		name: TOOL_EDIT,
+		label: "Memory Edit",
+		description:
+			'Update or forget a long-term memory page by vault-relative path (e.g. topics/omp-config.md, as returned by search). action "update" replaces the page body with content; action "forget" deletes the page.',
+		parameters: z.object({
+			path: z.string().describe("Vault-relative page path"),
+			action: z.string().describe('"update" | "forget"'),
+			content: z.string().optional().describe("New page body for update"),
+		}),
+		async execute(_toolCallId, params: EditParams, _signal, _onUpdate, ctx) {
+			const rt = await getRuntime(ctx);
+			if (params.action === "forget") {
+				const deleted = await rt.store.deletePage(params.path);
+				if (deleted && params.path.startsWith("topics/")) await rebuildMasterIndex(rt.store);
+				const text = deleted ? `Deleted ${params.path}.` : `No page at ${params.path}.`;
+				return { content: [{ type: "text", text }], details: { deleted } };
+			}
+			if (params.action === "update") {
+				if (!params.content?.trim()) {
+					return { content: [{ type: "text", text: 'action "update" requires non-empty content.' }], details: { updated: false } };
 				}
-				const where = topicPath ? `daily log (${dailyPath}) and topic page (${topicPath})` : `daily log (${dailyPath})`;
-				return { content: [{ type: "text", text: `Remembered in ${where}.` }], details: { dailyPath, topicPath } };
-			},
-		});
-
-		pi.registerTool({
-			name: names.edit,
-			label: "Memory Edit",
-			description:
-				'Update or forget a long-term memory page by vault-relative path (e.g. topics/omp-config.md, as returned by search). action "update" replaces the page body with content; action "forget" deletes the page.',
-			parameters: z.object({
-				path: z.string().describe("Vault-relative page path"),
-				action: z.string().describe('"update" | "forget"'),
-				content: z.string().optional().describe("New page body for update"),
-			}),
-			async execute(_toolCallId, params: EditParams, _signal, _onUpdate, ctx) {
-				const rt = await getRuntime(ctx);
-				if (params.action === "forget") {
-					const deleted = await rt.store.deletePage(params.path);
-					if (deleted && params.path.startsWith("topics/")) await rebuildMasterIndex(rt.store);
-					const text = deleted ? `Deleted ${params.path}.` : `No page at ${params.path}.`;
-					return { content: [{ type: "text", text }], details: { deleted } };
+				const page = await rt.store.readPage(params.path);
+				if (!page) {
+					return { content: [{ type: "text", text: `No page at ${params.path}.` }], details: { updated: false } };
 				}
-				if (params.action === "update") {
-					if (!params.content?.trim()) {
-						return { content: [{ type: "text", text: 'action "update" requires non-empty content.' }], details: { updated: false } };
-					}
-					const page = await rt.store.readPage(params.path);
-					if (!page) {
-						return { content: [{ type: "text", text: `No page at ${params.path}.` }], details: { updated: false } };
-					}
-					await rt.store.writePage(params.path, { ...page.meta, updated: new Date().toISOString() }, params.content);
-					if (params.path.startsWith("topics/")) await rebuildMasterIndex(rt.store);
-					return { content: [{ type: "text", text: `Updated ${params.path}.` }], details: { updated: true } };
-				}
-				return { content: [{ type: "text", text: `Unknown action "${params.action}" — use "update" or "forget".` }], details: {} };
-			},
-		});
-	}
+				await rt.store.writePage(params.path, { ...page.meta, updated: new Date().toISOString() }, params.content);
+				if (params.path.startsWith("topics/")) await rebuildMasterIndex(rt.store);
+				return { content: [{ type: "text", text: `Updated ${params.path}.` }], details: { updated: true } };
+			}
+			return { content: [{ type: "text", text: `Unknown action "${params.action}" — use "update" or "forget".` }], details: {} };
+		},
+	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (ctx.agent.kind === "sub") return;
 		if (!envEnabled("OMP_MEMORY_AUTO_RECALL", true)) return;
 		try {
 			const rt = await getRuntime(ctx);
-			const names = toolNames ?? FALLBACK_NAMES;
 			const block = await buildRecallBlock(rt.index, event.prompt, {
 				limit: envInt("OMP_MEMORY_RECALL_LIMIT", 5),
 				root: rt.root,
-				searchTool: names.search,
-				rememberTool: names.remember,
 			});
 			if (!block) return;
 			return { systemPrompt: [...event.systemPrompt, block] };
