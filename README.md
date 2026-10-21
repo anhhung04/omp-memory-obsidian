@@ -73,6 +73,10 @@ bun test          # vault engine + extraction parsing
 bun run typecheck
 ```
 
+## License
+
+[PolyForm Noncommercial 1.0.0](./LICENSE) — free for personal use, research, hobby projects, education, charities, and government; commercial use is not permitted. Required Notice: Copyright 2026 hung hoang (https://github.com/anhhung04).
+
 ## Roadmap
 
 - Pluggable embeddings for semantic recall (FTS only today)
