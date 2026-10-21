@@ -1,6 +1,6 @@
 {
 	"name": "omp-memory-obsidian",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "Obsidian-vault long-term memory for omp — the agent maintains a Karpathy-style wiki you can read and edit",
 	"license": "PolyForm-Noncommercial-1.0.0",
 	"type": "module",
