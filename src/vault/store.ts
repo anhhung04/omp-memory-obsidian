@@ -202,9 +202,11 @@ export class VaultStore {
 	private constructor(readonly root: string) {}
 
 	static async open(root: string): Promise<VaultStore> {
-		await mkdir(join(root, "topics"), { recursive: true });
-		await mkdir(join(root, "daily"), { recursive: true });
-		return new VaultStore(root);
+		// resolve() normalizes separators — abs() escape checks compare with sep.
+		const resolved = resolve(root);
+		await mkdir(join(resolved, "topics"), { recursive: true });
+		await mkdir(join(resolved, "daily"), { recursive: true });
+		return new VaultStore(resolved);
 	}
 
 	/** Subscribe to write/delete notifications (used by the search index). */

@@ -15,7 +15,12 @@
  * Vault root resolution (first match wins):
  *   1. OMP_MEMORY_VAULT env var
  *   2. <cwd>/.omp/memory-vault when that directory already exists
- *   3. ~/.omp/agent/memory-vault (created on demand)
+ *   3. Default root — native Windows: %USERPROFILE%\Documents\
+ *      omp-memory-vault; under WSL: C:\Users\<user>\Documents\
+ *      omp-memory-vault via drvfs so Windows Obsidian can open it;
+ *      elsewhere ~/.omp/agent/memory-vault (created on demand).
+ *      Set OMP_MEMORY_WINDOWS_USER when the Linux user name differs from
+ *      the Windows profile folder name.
  *
  * Vault runtimes are keyed by vault root and shared across rebound sessions;
  * tool-name registration is per binding (factories re-execute per session).
@@ -27,6 +32,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { VaultIndex } from "../vault/index";
+import { defaultVaultRoot } from "../vault/platform";
 import { slugify, VaultStore } from "../vault/store";
 import { rebuildMasterIndex } from "../vault/wiki";
 import { buildRecallBlock } from "./recall";
@@ -78,7 +84,7 @@ function resolveVaultRoot(cwd: string): string {
 	if (env) return resolve(env.replace(/^~(?=\/|$)/, homedir()));
 	const projectVault = join(cwd, ".omp", "memory-vault");
 	if (existsSync(projectVault)) return projectVault;
-	return join(homedir(), ".omp", "agent", "memory-vault");
+	return defaultVaultRoot();
 }
 
 function envInt(name: string, fallback: number): number {

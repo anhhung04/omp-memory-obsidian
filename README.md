@@ -57,7 +57,13 @@ Then open the vault in Obsidian: **Open folder as vault** → the vault root bel
 | `OMP_MEMORY_AUTO_RETAIN` | `true` | Extract memories automatically |
 | `OMP_MEMORY_RETAIN_EVERY` | `4` | Turns between extractions |
 
-Vault root resolution: `OMP_MEMORY_VAULT` → `<cwd>/.omp/memory-vault` if it exists (per-project vault) → `~/.omp/agent/memory-vault`.
+Vault root resolution: `OMP_MEMORY_VAULT` → `<cwd>/.omp/memory-vault` if it exists (per-project vault) → platform default.
+
+Platform default:
+
+- **Native Windows** → `%USERPROFILE%\Documents\omp-memory-vault`
+- **WSL** → `C:\Users\<user>\Documents\omp-memory-vault` (via `/mnt/c`, so Windows-side Obsidian opens it as a normal vault). The Windows user name is taken from `OMP_MEMORY_WINDOWS_USER`, else `USERPROFILE`, else the Linux `USER`. If `/mnt/c` or the profile isn't reachable, it falls back to the Linux home. Note: drvfs/9P doesn't deliver file-watch events into WSL, so Obsidian's graph may need a manual refresh after agent writes; our own search index doesn't rely on watchers. Existing vaults are never moved — this only selects the default for a fresh vault.
+- **Linux/macOS** → `~/.omp/agent/memory-vault`
 
 ## Develop
 
